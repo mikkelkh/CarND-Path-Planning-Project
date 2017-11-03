@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
@@ -198,6 +199,13 @@ int main() {
 
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
+	// Define relevant parameters
+	int lane = 1;
+	double ref_vel = 49.5; //mph
+	int N_waypoints = 3; // Number of future waypoints to use for the spline
+	double waypoint_spacing = 30.0; // m
+	int N_path = 50;
+
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -238,6 +246,169 @@ int main() {
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
+          	// Straight path
+//          	double dist_inc = 0.5;
+//			for(int i = 0; i < 50; i++)
+//			{
+//				  next_x_vals.push_back(car_x+(dist_inc*i)*cos(deg2rad(car_yaw)));
+//				  next_y_vals.push_back(car_y+(dist_inc*i)*sin(deg2rad(car_yaw)));
+//			}
+
+          	// Circular path
+//          	double pos_x;
+//			double pos_y;
+//			double angle;
+//			int path_size = previous_path_x.size();
+//
+//			for(int i = 0; i < path_size; i++)
+//			{
+//			  next_x_vals.push_back(previous_path_x[i]);
+//			  next_y_vals.push_back(previous_path_y[i]);
+//			}
+//
+//			if(path_size == 0)
+//			{
+//			  pos_x = car_x;
+//			  pos_y = car_y;
+//			  angle = deg2rad(car_yaw);
+//			}
+//			else
+//			{
+//			  pos_x = previous_path_x[path_size-1];
+//			  pos_y = previous_path_y[path_size-1];
+//
+//			  double pos_x2 = previous_path_x[path_size-2];
+//			  double pos_y2 = previous_path_y[path_size-2];
+//			  angle = atan2(pos_y-pos_y2,pos_x-pos_x2);
+//			}
+//
+//			double dist_inc = 0.5;
+//			for(int i = 0; i < 50-path_size; i++)
+//			{
+//			  next_x_vals.push_back(pos_x+(dist_inc)*cos(angle+(i+1)*(pi()/100)));
+//			  next_y_vals.push_back(pos_y+(dist_inc)*sin(angle+(i+1)*(pi()/100)));
+//			  pos_x += (dist_inc)*cos(angle+(i+1)*(pi()/100));
+//			  pos_y += (dist_inc)*sin(angle+(i+1)*(pi()/100));
+//			}
+
+          	// Size of previous path that hasn't yet been executed by the simulator
+          	int prev_size = previous_path_x.size();
+
+          	// Create a list of widely spaced points (30 meters apart)
+          	vector<double> ptsx;
+          	vector<double> ptsy;
+
+          	// First, we add the last point we sent to the simulator, by using the previous path returned by the simulator
+          	double ref_x_prev,ref_x;
+          	double ref_y_prev,ref_y;
+          	double ref_yaw_prev,ref_yaw;
+
+//          	std::cout<<"car_yaw="<<car_yaw<<std::endl;
+
+          	// If previous path is nearly empty, use current position of the car as reference point
+          	if (prev_size<2)
+          	{
+          		ref_x_prev = car_x-cos(car_yaw);
+          		ref_x = car_x;
+
+          		ref_y_prev = car_y-sin(car_yaw);
+          		ref_y = car_y;
+
+          		ref_yaw = car_yaw;//deg2rad(car_yaw);
+          	}
+          	// Else, we use the previous path as starting point for our new trajectory
+          	else
+          	{
+          		ref_x_prev = previous_path_x[prev_size-2];
+          		ref_y_prev = previous_path_y[prev_size-2];
+
+          		ref_x = previous_path_x[prev_size-1];
+				ref_y = previous_path_y[prev_size-1];
+
+				ref_yaw = atan2(ref_y-ref_y_prev,ref_x-ref_x_prev);
+          	}
+
+          	// Add the first point
+          	ptsx.push_back(ref_x_prev);
+			ptsx.push_back(ref_x);
+
+			ptsy.push_back(ref_y_prev);
+			ptsy.push_back(ref_y);
+
+//			vector< vector<double>> waypoints;
+			for (size_t i=0;i<N_waypoints;i++)
+			{
+				vector<double> waypoint = getXY(car_s+waypoint_spacing*(i+1),2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+
+				ptsx.push_back(waypoint[0]);
+				ptsy.push_back(waypoint[1]);
+//				waypoints.push_back(getXY(car_s+waypoint_spacing*(i+1),2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y));
+			}
+
+			// Transform from global map coordinates to local vehicle coordinates
+			for (size_t i=0;i<ptsx.size();i++)
+			{
+				// Translation
+				double shift_x = ptsx[i]-ref_x;
+				double shift_y = ptsy[i]-ref_y;
+
+				// Rotation
+				ptsx[i] = shift_x*cos(0-ref_yaw)-shift_y*sin(0-ref_yaw);
+				ptsy[i] = shift_x*sin(0-ref_yaw)+shift_y*cos(0-ref_yaw);
+			}
+
+//			std::cout<<"ptsx.size()="<<ptsx.size()<<std::endl;
+
+			// Create a spline
+			tk::spline s;
+
+			// Add the waypoints to the spline
+			s.set_points(ptsx,ptsy);
+
+			// Define list of query points on the spline that we want to send to our simulator
+			// Start by adding all previous points from the simulator (ensure smooth transition)
+			for (size_t i=0;i<prev_size;i++)
+			{
+				next_x_vals.push_back(previous_path_x[i]);
+				next_y_vals.push_back(previous_path_y[i]);
+			}
+
+			// Make sure to add evenly spaced points along the spline.
+			// For this, we use a linear approximation from the first to the second waypoint.
+			double target_x = waypoint_spacing;
+			double target_y = s(target_x);
+//			std::cout<<"target_y="<<target_y<<std::endl;
+			double target_dist = sqrt((target_x*target_x)+target_y*target_y);
+
+			double x_add_on = 0;
+			for (size_t i=0;i<N_path-prev_size;i++)
+			{
+				double N = target_dist/(0.02*ref_vel/2.24); // Compute spacing between points, and convert from mph to m/s
+				double x_point = x_add_on+target_x/N;
+				double y_point = s(x_point);
+
+				x_add_on = x_point;
+
+				// Transform back from local vehicle coordiantes to global map coordinates
+				double x_ref = x_point;
+				double y_ref = y_point;
+
+				// Rotation
+				x_point = x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw);
+				y_point = x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw);
+
+				// Translation
+				x_point += ref_x;
+				y_point += ref_y;
+
+//				std::cout<<"x_point="<<x_point<<", y_point="<<y_point<<std::endl;
+
+				// Add point to path planner list
+				next_x_vals.push_back(x_point);
+				next_y_vals.push_back(y_point);
+			}
+
+//			std::cout<<"first_x="<<next_x_vals[0]<<std::endl;
 
           	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           	msgJson["next_x"] = next_x_vals;
