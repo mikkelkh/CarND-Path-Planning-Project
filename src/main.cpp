@@ -10,6 +10,13 @@
 #include "json.hpp"
 #include "spline.h"
 
+// Cost parameters
+#define LANE_CHANGE_WEIGHT 0.0
+#define COLLISION_WEIGHT 0.0
+#define DISTANCE_WEIGHT 1.0
+#define VELOCITY_WEIGHT 0.0
+#define STOP_COST 0.8
+
 using namespace std;
 
 // for convenience
@@ -160,6 +167,37 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 }
 
+
+
+
+//double calculate_cost(State state, auto sensor_fusion)
+//{
+//	double cost = 0;
+//
+//	for (size_t i=0;i<sensor_fusion.size();i++)
+//	{
+//		float d = sensor_fusion[i][6];
+//
+//		// Only look at cars in the desired lane
+//		if (d < (2+4*state.lane+2) && d > (2+4*state.lane-2))
+//		{
+//			double vx = sensor_fusion[i][3];
+//			double vy = sensor_fusion[i][4];
+//			double check_speed = sqrt(vx*vx+vy*vy);
+//			double check_car_s = sensor_fusion[i][5];
+//
+//			// Predict future trajectory of car
+//			for (size_t t=0;t<state.next_x_vals.size();t++)
+//			{
+//				double car_s = check_car_s+(double)t*0.02*check_speed;
+//
+//			}
+//			state.next_x_vals
+//		}
+//	}
+//	return 0;
+//}
+
 int main() {
   uWS::Hub h;
 
@@ -197,14 +235,21 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  double ref_vel = 0.3; // start at mph
+  int chosen_state;
+  int current_lane = -1;
+
+  h.onMessage([&max_s, &current_lane, &chosen_state, &ref_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
 	// Define relevant parameters
 	int lane = 1;
-	double ref_vel = 49.5; //mph
+
+	int next_lane;
+	double desired_vel = 50.0; // mph
 	int N_waypoints = 3; // Number of future waypoints to use for the spline
-	double waypoint_spacing = 30.0; // m
+	double waypoint_spacing = 50.0; // m
 	int N_path = 50;
+	int N_planner = 120;
 
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -230,6 +275,9 @@ int main() {
           	double car_d = j[1]["d"];
           	double car_yaw = j[1]["yaw"];
           	double car_speed = j[1]["speed"];
+          	if (current_lane<0)
+          		current_lane = int(car_d)/4;
+//          	std::cout<<"car_d="<<car_d<<", current_lane="<<current_lane<<std::endl;
 
           	// Previous path data given to the Planner
           	auto previous_path_x = j[1]["previous_path_x"];
@@ -240,6 +288,8 @@ int main() {
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
+
+//          	std::cout<<"car_yaw="<<car_yaw<<std::endl;
 
           	json msgJson;
 
@@ -294,11 +344,7 @@ int main() {
           	// Size of previous path that hasn't yet been executed by the simulator
           	int prev_size = previous_path_x.size();
 
-          	// Create a list of widely spaced points (30 meters apart)
-          	vector<double> ptsx;
-          	vector<double> ptsy;
-
-          	// First, we add the last point we sent to the simulator, by using the previous path returned by the simulator
+          	// Use the previous path returned by the simulator to generate the first point which will be the same for all trajectories
           	double ref_x_prev,ref_x;
           	double ref_y_prev,ref_y;
           	double ref_yaw_prev,ref_yaw;
@@ -308,13 +354,13 @@ int main() {
           	// If previous path is nearly empty, use current position of the car as reference point
           	if (prev_size<2)
           	{
-          		ref_x_prev = car_x-cos(car_yaw);
+          		ref_yaw = deg2rad(car_yaw);
+
+          		ref_x_prev = car_x-cos(ref_yaw);
           		ref_x = car_x;
 
-          		ref_y_prev = car_y-sin(car_yaw);
+          		ref_y_prev = car_y-sin(ref_yaw);
           		ref_y = car_y;
-
-          		ref_yaw = car_yaw;//deg2rad(car_yaw);
           	}
           	// Else, we use the previous path as starting point for our new trajectory
           	else
@@ -328,97 +374,635 @@ int main() {
 				ref_yaw = atan2(ref_y-ref_y_prev,ref_x-ref_x_prev);
           	}
 
-          	// Add the first point
-          	ptsx.push_back(ref_x_prev);
-			ptsx.push_back(ref_x);
+			// Behavior Planning: calculate costs for different
+			// First, generate trajectories for each of the possible states:
+			// 1) KL (Keep Lane)
+			// 2) LCL (Lange Change Left)
+			// 3) LCR (Lange Change Right)
+          	enum state_name { KL, LCL, LCR};
+          	struct State {
+          		state_name name;
+          		vector<double> next_x_vals;
+          		vector<double> next_y_vals;
+          		vector<double> next_yaw_vals;
+          		vector<double> next_s_vals;
+          		vector<double> next_d_vals;
+          		int lane;
+          		double vel;
+          		double cost = 0;
+          	};
 
-			ptsy.push_back(ref_y_prev);
-			ptsy.push_back(ref_y);
+			vector<State> states;
+			State state;
+			state.lane = current_lane;
+			state.vel = ref_vel;
+			state.name = KL;
+			states.push_back(state);
 
-//			vector< vector<double>> waypoints;
-			for (size_t i=0;i<N_waypoints;i++)
+			if ((car_d < 2+4*current_lane+0.5) && (car_d > 2+4*current_lane-0.5))
 			{
-				vector<double> waypoint = getXY(car_s+waypoint_spacing*(i+1),2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+				state.name = LCL;
+				states.push_back(state);
+				state.name = LCR;
+				states.push_back(state);
 
-				ptsx.push_back(waypoint[0]);
-				ptsy.push_back(waypoint[1]);
-//				waypoints.push_back(getXY(car_s+waypoint_spacing*(i+1),2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y));
+				// Remove infeasible lane changes that will result in the car going off the road
+				if (current_lane==2)
+					states.erase(states.begin()+2);
+				if (current_lane==0)
+					states.erase(states.begin()+1);
 			}
 
-			// Transform from global map coordinates to local vehicle coordinates
-			for (size_t i=0;i<ptsx.size();i++)
-			{
-				// Translation
-				double shift_x = ptsx[i]-ref_x;
-				double shift_y = ptsy[i]-ref_y;
+//			std::cout<<"states.size()="<<states.size()<<std::endl;
 
-				// Rotation
-				ptsx[i] = shift_x*cos(0-ref_yaw)-shift_y*sin(0-ref_yaw);
-				ptsy[i] = shift_x*sin(0-ref_yaw)+shift_y*cos(0-ref_yaw);
+
+
+//			std::cout<<"states.size()="<<states.size()<<std::endl;
+
+			// Add duplicates of feasible states with increased and decreased velocities
+			int states_old_size = states.size();
+			for (size_t t=0;t<states_old_size;t++)
+			{
+				State state_tmp = states[t];
+				state_tmp.vel = states[t].vel+0.224;
+				if ((state_tmp.vel <= desired_vel) && (state_tmp.name==KL))
+					states.push_back(state_tmp);
+				state_tmp.vel = states[t].vel-0.224;
+				if (state_tmp.vel >= 0)
+					states.push_back(state_tmp);
 			}
 
-//			std::cout<<"ptsx.size()="<<ptsx.size()<<std::endl;
+//			std::cout<<"states.size()="<<states.size()<<std::endl;
 
-			// Create a spline
-			tk::spline s;
+//			state.vel = car_speed+0.224;
+//			state.name = KL;
+//			states.push_back(state);
+//			state.name = LCL;
+//			states.push_back(state);
+//			state.name = LCR;
+//			states.push_back(state);
+//
+//			state.vel = car_speed-0.224;
+//			state.name = KL;
+//			states.push_back(state);
+//			state.name = LCL;
+//			states.push_back(state);
+//			state.name = LCR;
+//			states.push_back(state);
 
-			// Add the waypoints to the spline
-			s.set_points(ptsx,ptsy);
+//			std::cout<<"current_lane="<<current_lane<<std::endl;
 
-			// Define list of query points on the spline that we want to send to our simulator
-			// Start by adding all previous points from the simulator (ensure smooth transition)
-			for (size_t i=0;i<prev_size;i++)
+			for (size_t t=0;t<states.size();t++)
 			{
-				next_x_vals.push_back(previous_path_x[i]);
-				next_y_vals.push_back(previous_path_y[i]);
+//				if (states[t].name == KL)
+//					states[t].lane = current_lane;
+				if (states[t].name == LCL)
+					states[t].lane -= 1;
+				else if (states[t].name == LCR)
+					states[t].lane += 1;
+
+//				std::cout<<"lane="<<states[t].lane<<std::endl;
+
+				// Create a list of widely spaced points (30 meters apart)
+				vector<double> ptsx;
+				vector<double> ptsy;
+
+				// First, we add the last point we sent to the simulator, by using the previous path returned by the simulator
+				ptsx.push_back(ref_x_prev);
+				ptsx.push_back(ref_x);
+
+				ptsy.push_back(ref_y_prev);
+				ptsy.push_back(ref_y);
+
+	//			vector< vector<double>> waypoints;
+				for (size_t i=0;i<N_waypoints;i++)
+				{
+					vector<double> waypoint = getXY(car_s+waypoint_spacing*(i+1),2+4*states[t].lane,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+
+					ptsx.push_back(waypoint[0]);
+					ptsy.push_back(waypoint[1]);
+	//				waypoints.push_back(getXY(car_s+waypoint_spacing*(i+1),2+4*lane,map_waypoints_s,map_waypoints_x,map_waypoints_y));
+				}
+
+				// Transform from global map coordinates to local vehicle coordinates
+				for (size_t i=0;i<ptsx.size();i++)
+				{
+					// Translation
+					double shift_x = ptsx[i]-ref_x;
+					double shift_y = ptsy[i]-ref_y;
+
+					// Rotation
+					ptsx[i] = shift_x*cos(0-ref_yaw)-shift_y*sin(0-ref_yaw);
+					ptsy[i] = shift_x*sin(0-ref_yaw)+shift_y*cos(0-ref_yaw);
+				}
+
+	//			std::cout<<"ptsx.size()="<<ptsx.size()<<std::endl;
+
+				// Create a spline
+				tk::spline s;
+
+//				std::cout<<"1="<<ptsx.size()<<","<<ptsy.size()<<" - "<<ptsx[0]<<","<<ptsy[0]<<std::endl;
+
+				// Add the waypoints to the spline
+				s.set_points(ptsx,ptsy);
+
+//				std::cout<<"1.1"<<std::endl;
+
+				// Define list of query points on the spline that we want to send to our simulator
+				// Start by adding all previous points from the simulator (ensure smooth transition)
+				for (size_t i=0;i<prev_size;i++)
+				{
+					states[t].next_x_vals.push_back(previous_path_x[i]);
+					states[t].next_y_vals.push_back(previous_path_y[i]);
+//					std::cout<<"1.2"<<std::endl;
+
+//					vector<double> next_frenet_vals = getFrenet(previous_path_x[i], previous_path_y[i], ref_yaw, map_waypoints_x, map_waypoints_y);
+//					states[t].next_yaw_vals.push_back(ref_yaw);
+//					states[t].next_s_vals.push_back(next_frenet_vals[0]);
+//					states[t].next_d_vals.push_back(next_frenet_vals[1]);
+				}
+
+//				std::cout<<"2"<<std::endl;
+
+				// Make sure to add evenly spaced points along the spline.
+				// For this, we use a linear approximation from the first to the second waypoint.
+				double target_x = waypoint_spacing;
+				double target_y = s(target_x);
+	//			std::cout<<"target_y="<<target_y<<std::endl;
+				double target_dist = sqrt((target_x*target_x)+target_y*target_y);
+
+				double x_add_on = 0;
+				for (size_t i=0;i<N_path-prev_size;i++)
+				{
+					double N = target_dist/(0.02*states[t].vel/2.24); // Compute spacing between points, and convert from mph to m/s
+					double x_point = x_add_on+target_x/N;
+					double y_point = s(x_point);
+
+					x_add_on = x_point;
+
+					// Transform back from local vehicle coordiantes to global map coordinates
+					double x_ref = x_point;
+					double y_ref = y_point;
+
+					// Rotation
+					x_point = x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw);
+					y_point = x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw);
+
+					// Translation
+					x_point += ref_x;
+					y_point += ref_y;
+
+	//				std::cout<<"x_point="<<x_point<<", y_point="<<y_point<<std::endl;
+
+					// Add point to path planner list
+					states[t].next_x_vals.push_back(x_point);
+					states[t].next_y_vals.push_back(y_point);
+
+//					vector<double> next_frenet_vals = getFrenet(x_point, y_point, ref_yaw, map_waypoints_x, map_waypoints_y);
+//					states[t].next_yaw_vals.push_back(ref_yaw);
+//					states[t].next_s_vals.push_back(next_frenet_vals[0]);
+//					states[t].next_d_vals.push_back(next_frenet_vals[1]);
+				}
+
+
+				// Create a spline
+				tk::spline s2;
+
+				vector<double> ptss;
+				vector<double> ptsd;
+
+				ptss.push_back(car_s);
+				ptsd.push_back(car_d);
+
+				for (size_t i=0;i<N_waypoints;i++)
+				{
+					ptss.push_back(car_s+waypoint_spacing*(i+1));
+					ptsd.push_back(2+4*states[t].lane);
+				}
+				s2.set_points(ptss,ptsd);
+
+
+//				double planner_spacing = ((double)N_waypoints)*waypoint_spacing/((double)N_planner);
+				for (size_t i=0;i<N_planner;i++)
+				{
+					double next_s = car_s+((double)i)*(0.025*states[t].vel/2.24);
+					double next_d = s2(next_s);
+					states[t].next_s_vals.push_back(next_s);
+					states[t].next_d_vals.push_back(next_d);
+				}
+
+
+//				// Also add points in Frenet coordinates for later use
+//				std::cout<<"1"<<std::endl;
+//				vector<double> start_frenet_vals = getFrenet(states[t].next_x_vals[0], states[t].next_y_vals[0], ref_yaw, map_waypoints_x, map_waypoints_y);
+//				vector<double> end_frenet_vals = getFrenet(states[t].next_x_vals[N_path-1], states[t].next_y_vals[N_path-1], ref_yaw, map_waypoints_x, map_waypoints_y);
+//				std::cout<<"2"<<std::endl;
+//				double last_s_val = -1;
+//				for (size_t i=0;i<states[t].next_x_vals.size();i++)
+//				{
+////					double theta;
+////					if (i==0)
+////						theta = deg2rad(car_yaw);
+////					else
+////						theta = atan2(states[t].next_y_vals[i]-states[t].next_y_vals[i-1],states[t].next_x_vals[i]-states[t].next_x_vals[i-1]);
+//					std::cout<<"3"<<std::endl;
+//					vector<double> next_frenet_vals = getFrenet(states[t].next_x_vals[i], states[t].next_y_vals[i], ref_yaw, map_waypoints_x, map_waypoints_y);
+//					std::cout<<"4"<<std::endl;
+//					states[t].next_yaw_vals.push_back(ref_yaw);
+//
+//					double s = ((double)i)*(end_frenet_vals[0]-start_frenet_vals[0])/((double)N_path);
+//
+//					states[t].next_s_vals.push_back(s);
+//
+////					states[t].next_s_vals.push_back(next_frenet_vals[0]);
+//					states[t].next_d_vals.push_back(next_frenet_vals[1]);
+//
+//					// If the s values are not monotonically increasing (as they should be), we throw away the path.
+//					// This can happen due to errors in the getFrenet transformation.
+////					if (next_frenet_vals[0]<last_s_val)
+////						states[t].cost = 9999;
+////					last_s_val = next_frenet_vals[0];
+//				}
+//				std::cout<<"3"<<std::endl;
 			}
 
-			// Make sure to add evenly spaced points along the spline.
-			// For this, we use a linear approximation from the first to the second waypoint.
-			double target_x = waypoint_spacing;
-			double target_y = s(target_x);
-//			std::cout<<"target_y="<<target_y<<std::endl;
-			double target_dist = sqrt((target_x*target_x)+target_y*target_y);
 
-			double x_add_on = 0;
-			for (size_t i=0;i<N_path-prev_size;i++)
+			int sensor_fusion_old_size = sensor_fusion.size();
+			for (size_t i=0;i<sensor_fusion_old_size;i++)
 			{
-				double N = target_dist/(0.02*ref_vel/2.24); // Compute spacing between points, and convert from mph to m/s
-				double x_point = x_add_on+target_x/N;
-				double y_point = s(x_point);
-
-				x_add_on = x_point;
-
-				// Transform back from local vehicle coordiantes to global map coordinates
-				double x_ref = x_point;
-				double y_ref = y_point;
-
-				// Rotation
-				x_point = x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw);
-				y_point = x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw);
-
-				// Translation
-				x_point += ref_x;
-				y_point += ref_y;
-
-//				std::cout<<"x_point="<<x_point<<", y_point="<<y_point<<std::endl;
-
-				// Add point to path planner list
-				next_x_vals.push_back(x_point);
-				next_y_vals.push_back(y_point);
+				double check_car_s = sensor_fusion[i][5];
+				sensor_fusion[i][5] = check_car_s+2;
+				auto new_car = sensor_fusion[i];
+				new_car[5] = check_car_s-2;
+				sensor_fusion.push_back(new_car);
 			}
 
+
+			std::cout<<"car_s="<<car_s;
+			if (car_s > max_s-500)
+			{
+				for (size_t i=0;i<sensor_fusion.size();i++)
+				{
+					double check_car_s = sensor_fusion[i][5];
+
+					if (check_car_s<500)
+						sensor_fusion[i][5] = check_car_s+max_s;
+				}
+			}
+			std::cout<<std::endl;
+
+
+			// Calculate costs for trajectories
+			for (size_t t=0;t<states.size();t++)
+			{
+				if (states[t].cost != 9999)
+				{
+//			states[t].cost = calculate_cost(states[t]);
+				double distance_cost = 0;
+				double collision_cost = 0;
+
+				int car_ind = -1;
+				int max_safe_dist_ind = states[t].next_s_vals.size()-1;
+				double closest_car_dist = std::numeric_limits<double>::max();
+//				std::cout<<"states[t].next_s_vals.size()="<<states[t].next_s_vals.size()<<std::endl;
+				double max_safe_dist = states[t].next_s_vals[max_safe_dist_ind]-states[t].next_s_vals[0];
+				std::cout<<"Without cars: max_safe_dist="<<max_safe_dist<<", max_safe_dist_ind="<<max_safe_dist_ind<<std::endl;
+
+//				if (max_safe_dist<0)
+//				{
+//					std::cout<<"states[t].next_s_vals[max_safe_dist_ind]="<<states[t].next_s_vals[max_safe_dist_ind]<<","<<states[t].next_s_vals[1]<<","<<states[t].next_s_vals[2]<<", states[t].next_s_vals[0]="<<states[t].next_s_vals[0]<<std::endl;
+//					// Print s
+//					std::cout<<"s: ";
+//					for (size_t i=0;i<states[t].next_s_vals.size(); ++i)
+//					    std::cout << states[t].next_s_vals[i] << ' ';
+//					std::cout<<std::endl;
+//					// Print x
+//					std::cout<<"x: ";
+//					for (size_t i=0;i<states[t].next_x_vals.size(); ++i)
+//						std::cout << states[t].next_x_vals[i] << ' ';
+//					std::cout<<std::endl;
+//					// Print y
+//					std::cout<<"y: ";
+//					for (size_t i=0;i<states[t].next_y_vals.size(); ++i)
+//						std::cout << states[t].next_y_vals[i] << ' ';
+//					std::cout<<std::endl;
+//					// Print yaw
+//					std::cout<<"yaw: ";
+//					for (size_t i=0;i<states[t].next_yaw_vals.size(); ++i)
+//						std::cout << states[t].next_yaw_vals[i] << ' ';
+//					std::cout<<std::endl;
+//
+//					states[t].cost = -9999;
+//				}
+
+				for (size_t i=0;i<sensor_fusion.size();i++)
+				{
+					float d = sensor_fusion[i][6];
+
+					// Only look at cars in the desired lane
+					if (d < (2+4*states[t].lane+2) && d > (2+4*states[t].lane-2))
+					{
+						double vx = sensor_fusion[i][3];
+						double vy = sensor_fusion[i][4];
+						double check_speed = sqrt(vx*vx+vy*vy);
+						double check_car_s = sensor_fusion[i][5];
+
+						double prev_dist;
+						for (size_t s=0;s<states[t].next_s_vals.size();s++)
+						{
+							double check_car_s_next = check_car_s+(double)s*0.02*check_speed;
+
+							double dist = check_car_s_next-states[t].next_s_vals[s];
+
+							double safe_travel_dist = states[t].next_s_vals[s]-states[t].next_s_vals[0];
+
+							if ((s>0) && (prev_dist*dist<0) && (safe_travel_dist<max_safe_dist))
+							{
+								std::cout<<"dist="<<dist<<std::endl;
+								max_safe_dist = states[t].next_s_vals[s-1]-states[t].next_s_vals[0];
+								max_safe_dist_ind = s-1;
+							}
+							prev_dist = dist;
+		//					distance_cost += 1.0/exp(0.5*dist);
+						}
+					}
+				}
+
+				std::cout<<"With cars   : max_safe_dist="<<max_safe_dist<<", max_safe_dist_ind="<<max_safe_dist_ind<<std::endl;
+
+//				// Old approach: only look forward
+//				for (size_t i=0;i<sensor_fusion.size();i++)
+//				{
+//					float d = sensor_fusion[i][6];
+//
+//					// Only look at cars in the desired lane
+//					if (d < (2+4*states[t].lane+2) && d > (2+4*states[t].lane-2))
+//					{
+////						double vx = sensor_fusion[i][3];
+////						double vy = sensor_fusion[i][4];
+////						double check_speed = sqrt(vx*vx+vy*vy);
+//						double check_car_s = sensor_fusion[i][5];
+//
+//						double dist = check_car_s-car_s;
+//
+//						if (dist>0 && dist<closest_car_dist)
+//						{
+//							closest_car_dist = dist;
+//							car_ind = i;
+//						}
+//					}
+//				}
+//
+//				// Predict future trajectory of that car
+//				if (car_ind >= 0)
+//				{
+//					double vx = sensor_fusion[car_ind][3];
+//					double vy = sensor_fusion[car_ind][4];
+//					double check_speed = sqrt(vx*vx+vy*vy);
+//					double check_car_s = sensor_fusion[car_ind][5];
+//					for (size_t s=0;s<states[t].next_s_vals.size();s++)
+//					{
+//						double check_car_s_next = check_car_s+(double)s*0.02*check_speed;
+//
+//						double dist = check_car_s_next-states[t].next_s_vals[s];
+//
+//						if (dist<=10)
+//						{
+//							std::cout<<"dist="<<dist<<std::endl;
+//							if (max_safe_dist > states[t].next_s_vals[s]-states[t].next_s_vals[0])
+//							{
+//								max_safe_dist = states[t].next_s_vals[s]-states[t].next_s_vals[0];
+//								max_safe_dist_ind = s;
+//							}
+//							break;
+//						}
+//	//					distance_cost += 1.0/exp(0.5*dist);
+//					}
+//				}
+//				std::cout<<"closest_car_dist="<<closest_car_dist<<", max_safe_dist="<<max_safe_dist<<", max_safe_dist_ind="<<max_safe_dist_ind<<std::endl;
+
+						// Collision cost
+//						int end_ind = states[t].next_s_vals.size()-1;
+//						double check_car_s_end = check_car_s+(double)states[t].next_s_vals.size()*0.02*check_speed;
+//						if ((check_car_s_end > states[t].next_s_vals[end_ind]) && (check_car_s_end-states[t].next_s_vals[end_ind] < 30.0))
+//							collision_cost += states[t].vel;
+
+						// Add cost for distance to this car
+//						for
+
+//				distance_cost = DISTANCE_WEIGHT*max_safe_dist_ind/(max_safe_dist+0.001);//1/(max_safe_dist/((double)max_safe_dist_ind+0.001));
+				distance_cost = DISTANCE_WEIGHT*1/(max_safe_dist+0.001f);
+//				distance_cost *= DISTANCE_WEIGHT;
+				collision_cost *= COLLISION_WEIGHT;
+
+//			// Calculate costs for trajectories
+//			for (size_t t=0;t<states.size();t++)
+//			{
+////			states[t].cost = calculate_cost(states[t]);
+//				double distance_cost = 0;
+//				double collision_cost = 0;
+//
+//				int ind_closest_in_front;
+//				for (size_t i=0;i<sensor_fusion.size();i++)
+//				{
+//					float d = sensor_fusion[i][6];
+//
+//					// Only look at cars in the desired lane
+//					if (d < (2+4*states[t].lane+2) && d > (2+4*states[t].lane-2))
+//					{
+//						double vx = sensor_fusion[i][3];
+//						double vy = sensor_fusion[i][4];
+//						double check_speed = sqrt(vx*vx+vy*vy);
+//						double check_car_s = sensor_fusion[i][5];
+//
+//						// Predict future trajectory of car
+////						vector<double> check_car_next_x_vals;
+////						vector<double> check_car_next_y_vals;
+//						for (size_t s=0;s<states[t].next_x_vals.size();s++)
+//						{
+//							double check_car_s_next = check_car_s+(double)s*0.02*check_speed;
+//
+////							vector<double> car_xy = getXY(check_car_s_next,d,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+//////							check_car_next_x_vals.push_back(car_xy[0]);
+//////							check_car_next_y_vals.push_back(car_xy[1]);
+////
+////							// Add cost for distance to this car
+////							double x_dist = states[t].next_x_vals[s]-car_xy[0];
+////							double y_dist = states[t].next_y_vals[s]-car_xy[1];
+////							double dist = sqrt(x_dist*x_dist+y_dist*y_dist);
+//							double dist = abs(check_car_s_next-states[t].next_s_vals[s]);
+//							distance_cost += 1.0/exp(0.5*dist);
+//						}
+//
+//						// Collision cost
+////						int end_ind = states[t].next_s_vals.size()-1;
+////						double check_car_s_end = check_car_s+(double)states[t].next_s_vals.size()*0.02*check_speed;
+////						if ((check_car_s_end > states[t].next_s_vals[end_ind]) && (check_car_s_end-states[t].next_s_vals[end_ind] < 30.0))
+////							collision_cost += states[t].vel;
+//
+//						// Add cost for distance to this car
+////						for
+//					}
+//				}
+//				distance_cost *= DISTANCE_WEIGHT;
+//				collision_cost *= COLLISION_WEIGHT;
+
+//				for (size_t i=0;i<sensor_fusion.size();i++)
+//				{
+//					float d = sensor_fusion[i][6];
+//
+//					// Only look at cars in the desired lane
+//					if (d < (2+4*states[t].lane+2) && d > (2+4*states[t].lane-2))
+//					{
+//						double vx = sensor_fusion[i][3];
+//						double vy = sensor_fusion[i][4];
+//						double check_speed = sqrt(vx*vx+vy*vy);
+//						double check_car_s = sensor_fusion[i][5];
+//
+//						// Predict future trajectory of car
+////						vector<double> check_car_next_x_vals;
+////						vector<double> check_car_next_y_vals;
+//						double min_dist = std::numeric_limits<double>::max();
+//						double prev_dist = std::numeric_limits<double>::max();
+//						for (size_t s=prev_size;s<states[t].next_x_vals.size();s++)
+//						{
+//							double check_car_s_next = check_car_s+(double)s*0.02*check_speed;
+//
+//							vector<double> car_xy = getXY(check_car_s_next,d,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+////							check_car_next_x_vals.push_back(car_xy[0]);
+////							check_car_next_y_vals.push_back(car_xy[1]);
+//
+//							// Add cost for distance to this car
+//							double x_dist = states[t].next_x_vals[s]-car_xy[0];
+//							double y_dist = states[t].next_y_vals[s]-car_xy[1];
+//							double dist = sqrt(x_dist*x_dist+y_dist*y_dist);
+//
+//							if (dist<min_dist)
+//								min_dist = dist;
+//
+//							if (dist>prev_dist)
+//								collision_cost += 1.0/exp(0.1*dist);
+//							else
+//								collision_cost += 1.0/exp(0.1*min_dist);
+//
+//							prev_dist = dist;
+//						}
+//
+//						// Add cost for distance to this car
+////						for
+//					}
+//				}
+
+//				for (size_t i=0;i<sensor_fusion.size();i++)
+//				{
+//					float d = sensor_fusion[i][6];
+//
+//					// Only look at cars in the desired lane
+//					if (d < (2+4*states[t].lane+2) && d > (2+4*states[t].lane-2))
+//					{
+//						double vx = sensor_fusion[i][3];
+//						double vy = sensor_fusion[i][4];
+//						double check_speed = sqrt(vx*vx+vy*vy);
+//						double check_car_s = sensor_fusion[i][5];
+//
+//						// Predict future trajectory of car
+////						vector<double> check_car_next_x_vals;
+////						vector<double> check_car_next_y_vals;
+//						vector<double> s_diffs;
+//						double s_diff_max = std::numeric_limits<double>::min();
+//						double s_diff_min = std::numeric_limits<double>::max();
+//						for (size_t s=0;s<states[t].next_s_vals.size();s++)
+//						{
+//							double check_car_s_next = check_car_s+(double)s*0.02*check_speed;
+//
+//							double s_diff = check_car_s_next-states[t].next_s_vals[s];
+//
+//							if (s_diff>s_diff_max)
+//								s_diff_max = s_diff;
+//							if (s_diff<s_diff_min)
+//								s_diff_min = s_diff;
+//
+//							s_diffs.push_back(s_diff);
+//						}
+//
+//						// If we collide with the vehicle
+//						if (s_diff_max > 0 && s_diff_min < 0)
+//							collision_cost += 999;
+//
+////						for (size_t s=0;s<s_diffs.size();s++)
+////						{
+////							collision_cost += 1.0/exp(s_diff);
+////						}
+//					}
+//				}
+//				collision_cost *= COLLISION_WEIGHT;
+
+				// Velocity cost
+				double velocity_cost;
+				if (states[t].vel < desired_vel)
+					velocity_cost = STOP_COST*(desired_vel-states[t].vel)/desired_vel;
+				else if ((states[t].vel > desired_vel) && (states[t].vel < 50.0))
+					velocity_cost = (states[t].vel-desired_vel)/(50.0-desired_vel);
+				else
+					velocity_cost = 1;
+				velocity_cost *= VELOCITY_WEIGHT;
+
+
+				// Lane change
+				double lane_diff = (double)(states[t].lane-current_lane);
+				double lane_change_cost = LANE_CHANGE_WEIGHT*sqrt(lane_diff*lane_diff);
+
+				// Combine all costs
+				double cost = distance_cost+collision_cost+velocity_cost+lane_change_cost;
+
+				states[t].cost = cost;
+
+//				std::cout<<"cost "<<t<<"="<<cost<<std::endl;
+				std::cout<<t<<"("<<states[t].lane<<")"<<"="<<cost<<" - vel="<<states[t].vel<<", velocity_cost="<<velocity_cost<<", lane_change_cost="<<lane_change_cost<<", distance_cost="<<distance_cost<<", collision_cost="<<collision_cost<<std::endl;
+
+				}
+			}
+//			std::cout<<"4"<<std::endl;
+			// Choose trajectory with lowest cost
+			double min_cost = 9999;
+			for (size_t t=0;t<states.size();t++)
+			{
+				if (states[t].cost < min_cost)
+				{
+					min_cost = states[t].cost;
+					chosen_state = t;
+				}
+			}
+
+			state = states[chosen_state];
+			current_lane = state.lane;
+
+//			std::cout<<"5"<<std::endl;
 //			std::cout<<"first_x="<<next_x_vals[0]<<std::endl;
+			std::cout<<"Chosen state: "<<chosen_state<<"("<<state.lane<<")"<<std::endl;
+			std::cout<<std::endl;
+
+			// Update reference velocity
+			ref_vel = state.vel;
 
           	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-          	msgJson["next_x"] = next_x_vals;
-          	msgJson["next_y"] = next_y_vals;
+//			vector<double> execute_x_vals;
+//			vector<double> execute_y_vals;
+
+//			for (size_t i=0;i<N_path;i++)
+//			{
+//				execute_x_vals.push_back(state.next_x_vals[i]);
+//				execute_y_vals.push_back(state.next_y_vals[i]);
+//			}
+
+          	msgJson["next_x"] = state.next_x_vals;
+          	msgJson["next_y"] = state.next_y_vals;
 
           	auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
           	//this_thread::sleep_for(chrono::milliseconds(1000));
           	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          
+
         }
       } else {
         // Manual driving
