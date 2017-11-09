@@ -1,5 +1,33 @@
 # CarND-Path-Planning-Project
 Self-Driving Car Engineer Nanodegree Program
+
+---
+
+![](screenshot.png)
+
+## Description
+In this project, a path planner is constructed to make a car drive smoothly and autonomously on a 3 lane highway with traffic. The path planner is able to keep inside its lane, avoids hitting other cars, and passes slower moving traffic all by using localization, sensor fusion, and map data provided by the car simulator.
+
+## Method
+For each time step, the simulator provides localization data of our car as well as all other cars in its vicinity.
+Based on the current location of our car, we generate a number of trajectory proposals.
+Each trajectory can take one of three lane states:
+1) Keep Lane (KL)
+2) Lane Change Left (LCL)
+3) Lane Change Right (LCR)
+
+If the car is in the leftmost lane, we remove LCL as an option. Similarly, if the car is in the rightmost lane, we remove LCR as an option.
+
+For each of the feasible states, 3 proposed trajectories are generated.
+One with the current velocity of our car, one with a slightly increased velocity, and one with a slightly decreased velocity.
+In total, we can therefore have 9 proposed trajectories (3 for KL, 3 for LCL, and 3 for LCR).
+
+The overall goal of the path planner is to choose the best of these trajectories and execute it in the simulator.
+The generation of each trajectory further has to make it smooth (not violating maximum jerk and acceleration values), not violate the speed limit, and stay inside the planned lane.
+
+Below, each of the steps in the chain is described in more detail.
+
+---
    
 ### Simulator.
 You can download the Term3 Simulator which contains the Path Planning Project from the [releases tab (https://github.com/udacity/self-driving-car-sim/releases).
