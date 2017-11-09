@@ -20,12 +20,38 @@ If the car is in the leftmost lane, we remove LCL as an option. Similarly, if th
 
 For each of the feasible states, 3 proposed trajectories are generated.
 One with the current velocity of our car, one with a slightly increased velocity, and one with a slightly decreased velocity.
+Velocities below 0 and velocities above the speed limit are of course not proposed.
 In total, we can therefore have 9 proposed trajectories (3 for KL, 3 for LCL, and 3 for LCR).
 
 The overall goal of the path planner is to choose the best of these trajectories and execute it in the simulator.
 The generation of each trajectory further has to make it smooth (not violating maximum jerk and acceleration values), not violate the speed limit, and stay inside the planned lane.
 
 Below, each of the steps in the chain is described in more detail.
+
+### Trajectory Generation
+First, each of the 9 proposed trajectories needs to be generated.
+A single proposed trajectory is characterized by 2 parameters:
+1) *velocity*: 0-50 mph
+2) *lane*: 0 (left lane), 1 (center lane), or 2 (right lane)
+
+A spline is used to represent the trajectory.
+It ensures a smooth path and can indirectly handle issues related to high values of sideways acceleration and jerk.
+A number of waypoints are generated that the spline must go through.
+In order to ensure a smooth transition from the previous planned path, we extend the previous path given to simulator.
+The waypoints used for the spline are therefore:
+1) The second to last point (x,y) given to the simulator.
+2) The last point (x,y) given to the simulator.
+3) A waypoint on the desired *lane* 50m ahead of us.
+4) A waypoint on the desired *lane* 100m ahead of us.
+5) A waypoint on the desired *lane* 150m ahead of us.
+
+In order to plan far ahead along the highway, but only execute a short path for each time step, we actually generate two versions of the proposed trajectory:
+1) Executable path: has a short horizon and is used for controlling the vehicle
+2) Planned path: has a long horizon and is used for planning into the future and for comparing the different proposed trajectories.
+
+
+
+All trajectories start at the current position of the car. 
 
 ---
    
