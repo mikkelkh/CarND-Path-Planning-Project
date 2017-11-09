@@ -414,7 +414,7 @@ int main() {
 
 							x_add_on = x_point;
 
-							// Transform back from local vehicle coordiantes to global map coordinates
+							// Transform back from local vehicle coordinates to global map coordinates
 							double x_ref = x_point;
 							double y_ref = y_point;
 
