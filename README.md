@@ -61,12 +61,17 @@ As the local vehicle coordinate of waypoint 2 is simply `(0,0)` and for waypoint
 Therefore, the `n`th point along the trajectory will have local vehicle coordinates:
 - `x = 50/dist * 0.02 * *velocity*/2.24`     (where 0.02 is the time cycle of the simulator, and 2.24 is a conversion from mph to m/s)
 - `y = s(x)`
+
 Finally, the coordinates are converted back to global map coordinates.
 This concludes the generation of the proposed trajectory.
 
-In order to plan far ahead along the highway, but only execute a short path for each time step, we actually generate two versions of the proposed trajectory:
-1) Executable path: has a short horizon and is used for controlling the vehicle
-2) Planned path: has a long horizon and is used for planning into the future and for comparing the different proposed trajectories.
+However, in order to plan far ahead along the highway, but only execute a short path for each time step, we actually generate two versions of the proposed trajectory:
+1) Executable trajectory: has a short horizon and is used for controlling the vehicle. The length of this trajectory is *N_path=50*.
+2) Planned trajectory: has a long horizon and is used for planning into the future and for comparing the different proposed trajectories. The length of this trajectory is *N_planner=120*. As it is only needed for planning and not execution, we define the spline directly in Frenet coordinates and sample from it with equally spaced, increasing s-values.
+
+In the code, both the executable and planned trajectory are stored in a struct for each of the 9 proposed trajectories.
+
+### Trajectory Evaluation
 
 
 
