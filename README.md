@@ -5,6 +5,8 @@ Self-Driving Car Engineer Nanodegree Program
 
 ![](screenshot.png)
 
+Video available [here](https://www.youtube.com/watch?v=VRzFdkxrZtQ&feature=youtu.be).
+
 ## Description
 In this project, a path planner is constructed to make a car drive smoothly and autonomously on a 3 lane highway with traffic. The path planner is able to keep inside its lane, avoids hitting other cars, and passes slower moving traffic all by using localization, sensor fusion, and map data provided by the car simulator.
 
@@ -20,6 +22,7 @@ If the car is in the leftmost lane, we remove LCL as an option. Similarly, if th
 
 For each of the feasible states, 3 proposed trajectories are generated.
 One with the current velocity of our car, one with a slightly increased velocity, and one with a slightly decreased velocity.
+The increases and decreases in velocity are inspired by the Udacity Project Walkthrough to ensure appropriate acceleration and jerk values along the direction of travel.
 Velocities below 0 and velocities above the speed limit are of course not proposed.
 In total, we can therefore have 9 proposed trajectories (3 for KL, 3 for LCL, and 3 for LCR).
 
@@ -35,6 +38,7 @@ A single proposed trajectory is characterized by 2 parameters:
 2) *lane*: 0 (left lane), 1 (center lane), or 2 (right lane)
 
 A spline is used to represent the trajectory.
+This approach is directly inspired by the Udacity Project Walkthrough.
 It ensures a smooth path and can indirectly handle issues related to high values of sideways acceleration and jerk.
 A number of waypoints are generated that the spline must go through.
 In order to ensure a smooth transition from the previous planned path, we extend the previous path given to simulator.
