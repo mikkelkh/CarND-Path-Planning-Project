@@ -100,6 +100,10 @@ This cost function will effectively handle the following situations:
 2) Maximize velocity up to the speed limit (larger velocity results in longer travel distance)
 3) Lane change when beneficial (if another lane is free, it will have a larger safe travel distance)
 
+## Conclusion
+The proposed method has been succesfully evaluated with the simulator.
+This is illustrated at the top of this page where a screenshot is shown of a run with 33.14 miles without incidents.
+
 ---
    
 ### Simulator.
