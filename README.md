@@ -58,8 +58,8 @@ Finally, the spline, *s*, is defined using the transformed waypoints. A [C++ spl
 In order to ensure a smooth path, we want to sample *N_path=50* points along the spline with equal spacing, corresponding to the desired *velocity* of the proposed trajectory.
 This is done by using a linear approximation between waypoint 2 and 3. This method has been adapted directly from the Udacity Project Walkthrough.
 As the local vehicle coordinate of waypoint 2 is simply `(0,0)` and for waypoint 3 `(50,s(50))`, the distance between waypoint 2 and 3 is `dist = sqrt(50*50+s(50)*s(50))`.
-Therefore, the `n`th point along the trajectory will have local vehicle coordinates:
-- `x = 50/dist * 0.02 * *velocity*/2.24`     (where 0.02 is the time cycle of the simulator, and 2.24 is a conversion from mph to m/s)
+Therefore, the *n*th point along the trajectory will have local vehicle coordinates:
+- `x = 50/dist * n * 0.02 * *velocity*/2.24`     (where 0.02 is the time cycle of the simulator, and 2.24 is a conversion from mph to m/s)
 - `y = s(x)`
 
 Finally, the coordinates are converted back to global map coordinates.
@@ -67,15 +67,34 @@ This concludes the generation of the proposed trajectory.
 
 However, in order to plan far ahead along the highway, but only execute a short path for each time step, we actually generate two versions of the proposed trajectory:
 1) Executable trajectory: has a short horizon and is used for controlling the vehicle. The length of this trajectory is *N_path=50*.
-2) Planned trajectory: has a long horizon and is used for planning into the future and for comparing the different proposed trajectories. The length of this trajectory is *N_planner=120*. As it is only needed for planning and not execution, we define the spline directly in Frenet coordinates and sample from it with equally spaced, increasing s-values.
+2) Planned trajectory: has a long horizon and is used for planning into the future and for comparing the different proposed trajectories. The length of this trajectory is *N_planner=120*. As it is only needed for planning and not execution, we define the spline directly in Frenet coordinates and sample from it with equally spaced, increasing s-values. The exact same waypoints as described above are used for the spline.
 
 In the code, both the executable and planned trajectory are stored in a struct for each of the 9 proposed trajectories.
 
 ### Trajectory Evaluation
+All proposed planned trajectories are evaluated on at a time. The evaluation assigns a cost to each trajectory. The trajectory with the smallest cost is then used for the simulator. That is, the corresponding executable trajectory is sent to the simulator.
 
+First, the sensor fusion list (containing localization data for all other cars), is augmented. As other cars are only modeled as points, we extend the representation and model each car with 2 points. One point 3 meters in front of car center, and one point 2 meters behind the car center. This way, we effectively avoid hitting the front and rear ends of other cars when changing lanes.
 
+For evaluating a given trajectory, a single cost function is used. We simply calculate the maximum safe travel distance, *max_dist* for the trajectory, taking into account all other cars in the desired *lane*. If there were no cars on the road, the safe distance would be the length of the *s* trajectory. This is therefore the maximum possible *max_dist*.
 
-All trajectories start at the current position of the car. 
+However, if there are other cars, a collision might happen at some point along the planned trajectory.
+We therefore loop through all other cars in the desired *lane* and calculate potential collision points for each.
+For each car, we first predict its trajectory for the same time steps as our own trajectory. This is done directly in Frenet coordinates by converting its x- and y-velocities (vx,vy) to an s-velocity: `s_other_car_velocity = sqrt(vx*vx+vy*vy)`.
+The *n*th point along its trajectory will then have s-coordinate `s_other_car_n = s_other_car_current + n * 0.02 * s_other_car_velocity`.
+We then compare that cars trajectory with the planned trajectory for each time step *n*.
+- `dist_n = s_other_car_n - s_our_car_n`
+
+A collision can happen with a car in front of us or a car approaching from behind. We therefore look for when the calculated distance changes sign. Further, we are only interested in collisions happening at closer distances than what we have seen so far. We therefore take the smallest calculated distance for all other cars in the sensor fusion list.
+Ultimately, we end of with a *max_dist* describing the maximum safe travel distance for the evaluated trajectory.
+
+We convert this maximum safe travel distance to a cost by taking the inverse:
+- `cost = 1/(max_dist+0.001)`
+
+This cost function will effectively handle the following situations:
+1) Avoid collisions (by choosing a trajectory with smaller velocity, resulting in a longer safe travel distance)
+2) Maximize velocity up to the speed limit (larger velocity results in longer travel distance)
+3) Lane change when beneficial (if another lane is free, it will have a larger safe travel distance)
 
 ---
    
