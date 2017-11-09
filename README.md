@@ -45,6 +45,25 @@ The waypoints used for the spline are therefore:
 4) A waypoint on the desired *lane* 100m ahead of us.
 5) A waypoint on the desired *lane* 150m ahead of us.
 
+Waypoints 1 and 2 are already in global (x,y) coordinates. 
+Waypoints 3-5, however, are first defined in Frenet (s,d) coordinates, as this significantly eases the definition. For waypoint 3, we have:
+- `s = car_s + 50`
+- `d = 2 + 4 * *lane*`    (as the lanes are 4 meters wide and we want the car to be in the center of *lane*)
+
+Waypoints 3-5 are then converted to global (x,y) coordinates using the function *getXY()* provided by Udacity.
+Before defining the spline, we convert all waypoints to local (x,y) coordinates in the vehicle frame.
+This is done with a translation and rotation, using the heading angle of the car.
+Finally, the spline, *s*, is defined using the transformed waypoints. A [C++ spline tool](http://kluge.in-chemnitz.de/opensource/spline/) is used that allows us to easily evaluate function values (sample points along the spline).
+
+In order to ensure a smooth path, we want to sample *N_path=50* points along the spline with equal spacing, corresponding to the desired *velocity* of the proposed trajectory.
+This is done by using a linear approximation between waypoint 2 and 3. This method has been adapted directly from the Udacity Project Walkthrough.
+As the local vehicle coordinate of waypoint 2 is simply `(0,0)` and for waypoint 3 `(50,s(50))`, the distance between waypoint 2 and 3 is `dist = sqrt(50*50+s(50)*s(50))`.
+Therefore, the `n`th point along the trajectory will have local vehicle coordinates:
+- `x = 50/dist * 0.02 * *velocity*/2.24`     (where 0.02 is the time cycle of the simulator, and 2.24 is a conversion from mph to m/s)
+- `y = s(x)`
+Finally, the coordinates are converted back to global map coordinates.
+This concludes the generation of the proposed trajectory.
+
 In order to plan far ahead along the highway, but only execute a short path for each time step, we actually generate two versions of the proposed trajectory:
 1) Executable path: has a short horizon and is used for controlling the vehicle
 2) Planned path: has a long horizon and is used for planning into the future and for comparing the different proposed trajectories.
